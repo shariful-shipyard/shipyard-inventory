@@ -23,7 +23,7 @@ st.markdown(
 )
 
 
-# --- DATABASE CONNECTION (SQLITE) ---
+# --- DATABASE CONNECTION & MIGRATION (FIXES OPERATIONAL ERROR) ---
 def get_connection():
     return sqlite3.connect("shipbuilding_store.db", check_same_thread=False)
 
@@ -31,6 +31,8 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Create table if not exists
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS inventory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,12 +48,23 @@ def init_db():
         remarks TEXT
     )
     """)
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT
     )
     """)
+
+    # Auto-fix missing columns in old database tables
+    cursor.execute("PRAGMA table_info(inventory)")
+    columns = [column[1] for column in cursor.fetchall()]
+
+    if "issued_to" not in columns:
+        cursor.execute("ALTER TABLE inventory ADD COLUMN issued_to TEXT")
+    if "remarks" not in columns:
+        cursor.execute("ALTER TABLE inventory ADD COLUMN remarks TEXT")
+
     conn.commit()
     conn.close()
 
