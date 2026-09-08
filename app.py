@@ -1,6 +1,6 @@
 from datetime import datetime
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import streamlit as st
 
 # --- STREAMLIT PAGE SETUP ---
@@ -22,8 +22,7 @@ def get_connection():
 
 def init_db():
     conn = get_connection()
-    # Create tables if not exist using PostgreSQL syntax
-    query = """
+    query = text("""
     CREATE TABLE IF NOT EXISTS inventory (
         id SERIAL PRIMARY KEY,
         date TEXT,
@@ -36,8 +35,9 @@ def init_db():
         transaction_type TEXT,
         remarks TEXT
     );
-    """
+    """)
     conn.execute(query)
+    conn.commit()
     conn.close()
 
 
@@ -82,24 +82,25 @@ with tab1:
         if btn_in or btn_out:
             trans_type = "IN" if btn_in else "OUT"
             conn = get_connection()
-            query = """
+            query = text("""
             INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, remarks)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
+            VALUES (:date, :project_hull, :item_code, :category, :material_spec, :qty, :unit, :transaction_type, :remarks)
+            """)
             conn.execute(
                 query,
-                (
-                    str(date_val),
-                    project_hull,
-                    item_code,
-                    category,
-                    material_spec,
-                    qty,
-                    unit,
-                    trans_type,
-                    remarks,
-                ),
+                {
+                    "date": str(date_val),
+                    "project_hull": project_hull,
+                    "item_code": item_code,
+                    "category": category,
+                    "material_spec": material_spec,
+                    "qty": qty,
+                    "unit": unit,
+                    "transaction_type": trans_type,
+                    "remarks": remarks,
+                },
             )
+            conn.commit()
             conn.close()
             st.success(f"Successfully recorded {trans_type} transaction!")
 
