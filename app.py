@@ -3,18 +3,29 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
-# --- STREAMLIT PAGE SETUP ---
+# --- PAGE SETUP ---
 st.set_page_config(
-    page_title="Shipbuilding Store & Project Management",
+    page_title="Shipbuilding Project & Store Management System",
     page_icon="🚢",
     layout="wide",
 )
 
+# Custom CSS to mimic desktop application layout
+st.markdown(
+    """
+    <style>
+    .stApp { background-color: #f4f6f9; }
+    div[data-testid="stHorizontalBlock"] { align-items: flex-end; }
+    .stButton>button { width: 100%; border-radius: 4px; font-weight: bold; }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
 
-# --- DATABASE SETUP (SQLITE) ---
+
+# --- DATABASE CONNECTION (SQLITE) ---
 def get_connection():
-    conn = sqlite3.connect("shipbuilding_store.db", check_same_thread=False)
-    return conn
+    return sqlite3.connect("shipbuilding_store.db", check_same_thread=False)
 
 
 def init_db():
@@ -31,7 +42,14 @@ def init_db():
         qty REAL,
         unit TEXT,
         transaction_type TEXT,
+        issued_to TEXT,
         remarks TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
     )
     """)
     conn.commit()
@@ -40,119 +58,365 @@ def init_db():
 
 init_db()
 
-# --- MAIN APP UI ---
-st.title("🚢 PROJECT-WISE INVENTORY MANAGEMENT")
 
-# Navigation Tabs
+# --- HELPER FUNCTIONS ---
+def get_yard_name():
+    conn = get_connection()
+    df = pd.read_sql(
+        "SELECT value FROM settings WHERE key='yard_name'", conn
+    )
+    conn.close()
+    return df.iloc[0]["value"] if not df.empty else "STORE CONTROL"
+
+
+def save_yard_name(name):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('yard_name', ?)",
+        (name,),
+    )
+    conn.commit()
+    conn.close()
+
+
+# Session state for Issue Cart
+if "cart" not in st.session_state:
+    st.session_state.cart = []
+
+# --- HEADER SECTION ---
+st.title("Shipbuilding Project & Store Management System")
+
+col_yard1, col_yard2, _ = st.columns([2, 1, 3])
+with col_yard1:
+    current_yard = get_yard_name()
+    yard_name_input = st.text_input(
+        "Shipyard Name:", value=current_yard, key="yard_input"
+    )
+with col_yard2:
+    if st.button("💾 Save Yard Name"):
+        save_yard_name(yard_name_input)
+        st.success("Yard Name Saved!")
+
+# NAVIGATION TABS
 tab1, tab2 = st.tabs(
     ["📥 Operations (In / Out)", "📊 Project & Yard Reports"]
 )
 
-# --- TAB 1: OPERATIONS ---
+# ==========================================
+# TAB 1: OPERATIONS (IN / OUT)
+# ==========================================
 with tab1:
-    st.header("Add / Receive Material to Project / Store")
-    with st.form("entry_form", clear_on_submit=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            date_val = st.date_input("Date", datetime.today())
-            project_hull = st.text_input(
-                "Project / Hull (e.g., Hull-101, ALL YARD)"
+    st.markdown("### Add / Receive Material to Project / Store")
+    with st.form("receive_form", clear_on_submit=True):
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.2, 1.2, 1, 1.5, 1.2, 0.8, 0.8, 1])
+        with c1:
+            rec_date = st.date_input("Date", datetime.today(), key="rec_date")
+        with c2:
+            rec_hull = st.text_input("Project/Hull", value="Hull-101", key="rec_hull")
+        with c3:
+            rec_code = st.text_input("Code", key="rec_code")
+        with c4:
+            rec_spec = st.text_input("Material Spec", key="rec_spec")
+        with c5:
+            rec_cat = st.selectbox("Category", ["Steel Plate", "Profile / Angle", "Pipe", "Electrode", "Other"], key="rec_cat")
+        with c6:
+            rec_unit = st.selectbox("Unit", ["Pcs", "Kg", "Meter", "Pkt", "Ltr"], key="rec_unit")
+        with c7:
+            rec_qty = st.number_input("Qty", min_value=0.0, step=1.0, key="rec_qty")
+        with c8:
+            rec_btn = st.form_submit_button("Receive")
+
+        if rec_btn:
+            if rec_code and rec_qty > 0:
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'IN')
+                """,
+                    (
+                        str(rec_date),
+                        rec_hull,
+                        rec_code,
+                        rec_cat,
+                        rec_spec,
+                        rec_qty,
+                        rec_unit,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+                st.success("Material Received Successfully!")
+            else:
+                st.error("Please provide Item Code and Qty.")
+
+    st.divider()
+
+    # MIDDLE SECTION: STOCK LEVEL & ISSUE CART
+    left_col, right_col = st.columns([1.2, 1])
+
+    # --- LEFT SIDE: OVERALL STOCK LEVEL ---
+    with left_col:
+        st.subheader("Overall Stock Level")
+        search_query = st.text_input("Search Material:", "")
+
+        conn = get_connection()
+        df_all = pd.read_sql("SELECT * FROM inventory", conn)
+        conn.close()
+
+        if not df_all.empty:
+            in_df = (
+                df_all[df_all["transaction_type"] == "IN"]
+                .groupby(["item_code", "material_spec", "category", "unit"])[
+                    "qty"
+                ]
+                .sum()
+                .reset_index()
+                .rename(columns={"qty": "IN"})
             )
-            item_code = st.text_input("Item Code")
-
-        with col2:
-            category = st.selectbox(
-                "Category",
-                ["Steel Plate", "Profile / Angle", "Pipe", "Electrode", "Other"],
+            out_df = (
+                df_all[df_all["transaction_type"] == "OUT"]
+                .groupby(["item_code", "material_spec", "category", "unit"])[
+                    "qty"
+                ]
+                .sum()
+                .reset_index()
+                .rename(columns={"qty": "OUT"})
             )
-            material_spec = st.text_input("Material Spec / Name")
-            qty = st.number_input("Qty", min_value=0.0, step=1.0)
 
-        with col3:
-            unit = st.selectbox("Unit", ["Pcs", "Kg", "Meter", "Pkt", "Ltr"])
-            remarks = st.text_area("Remarks")
+            stock_df = pd.merge(
+                in_df,
+                out_df,
+                on=["item_code", "material_spec", "category", "unit"],
+                how="outer",
+            ).fillna(0)
+            stock_df["Total Stock"] = stock_df["IN"] - stock_df["OUT"]
+            stock_df["ID"] = stock_df.index + 1
 
-        btn_in = st.form_submit_button("Receive Material (IN)")
-        btn_out = st.form_submit_button("Issue Material (OUT)")
-
-        if btn_in or btn_out:
-            trans_type = "IN" if btn_in else "OUT"
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-            INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, remarks)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    str(date_val),
-                    project_hull,
-                    item_code,
-                    category,
-                    material_spec,
-                    qty,
-                    unit,
-                    trans_type,
-                    remarks,
-                ),
+            display_df = stock_df[
+                [
+                    "ID",
+                    "item_code",
+                    "material_spec",
+                    "category",
+                    "unit",
+                    "Total Stock",
+                ]
+            ].rename(
+                columns={
+                    "item_code": "Code",
+                    "material_spec": "Material Description",
+                    "category": "Category",
+                    "unit": "Unit",
+                }
             )
-            conn.commit()
-            conn.close()
-            st.success(f"Successfully recorded {trans_type} transaction!")
 
-# --- TAB 2: REPORTS & BALANCE ---
+            if search_query:
+                display_df = display_df[
+                    display_df["Material Description"]
+                    .str.contains(search_query, case=False, na=False)
+                    | display_df["Code"].str.contains(
+                        search_query, case=False, na=False
+                    )
+                ]
+
+            st.dataframe(display_df, use_container_width=True, height=280)
+        else:
+            st.info("No stock available in store.")
+
+    # --- RIGHT SIDE: MATERIAL ISSUE CART ---
+    with right_col:
+        col_cart_title, col_cart_del = st.columns([2, 1])
+        with col_cart_title:
+            st.subheader("Material Issue Cart")
+        with col_cart_del:
+            if st.button("🗑️ Delete Selected Item"):
+                if st.session_state.cart:
+                    st.session_state.cart.pop()
+                    st.rerun()
+
+        cart_df = pd.DataFrame(
+            st.session_state.cart,
+            columns=["Code", "Material Description", "Qty"],
+        )
+        st.dataframe(cart_df, use_container_width=True, height=200)
+
+    # --- BOTTOM SECTION: ISSUE MATERIAL TO SPECIFIC PROJECT ---
+    st.markdown("### Material to Specific Project / Hull")
+    c_iss1, c_iss2, c_iss3, c_iss4, c_iss5, c_iss6, c_iss7 = st.columns(
+        [1.2, 1.2, 1.5, 0.8, 1, 1.2, 1]
+    )
+
+    with c_iss1:
+        iss_date = st.date_input("Date", datetime.today(), key="iss_date")
+    with c_iss2:
+        iss_hull = st.text_input(
+            "Project / Hull", value="Hull-101", key="iss_hull"
+        )
+    with c_iss3:
+        iss_to = st.text_input("Issued To / Contractor", key="iss_to")
+    with c_iss4:
+        iss_qty = st.number_input(
+            "Issue Qty", min_value=0.0, step=1.0, key="iss_qty"
+        )
+    with c_iss5:
+        if st.button("🛒 Add to Cart"):
+            if not df_all.empty and iss_qty > 0:
+                selected_item = display_df.iloc[
+                    0
+                ] if not display_df.empty else None
+                if selected_item is not None:
+                    st.session_state.cart.append(
+                        {
+                            "Code": selected_item["Code"],
+                            "Material Description": selected_item[
+                                "Material Description"
+                            ],
+                            "Qty": iss_qty,
+                            "Unit": selected_item["Unit"],
+                            "Category": selected_item["Category"],
+                        }
+                    )
+                    st.rerun()
+            else:
+                st.warning("Enter valid Qty.")
+
+    with c_iss6:
+        if st.button("✅ Confirm Issue & Print"):
+            if st.session_state.cart:
+                conn = get_connection()
+                cursor = conn.cursor()
+                for item in st.session_state.cart:
+                    cursor.execute(
+                        """
+                        INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, issued_to)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'OUT', ?)
+                    """,
+                        (
+                            str(iss_date),
+                            iss_hull,
+                            item["Code"],
+                            item["Category"],
+                            item["Material Description"],
+                            item["Qty"],
+                            item["Unit"],
+                            iss_to,
+                        ),
+                    )
+                conn.commit()
+                conn.close()
+                st.session_state.cart = []
+                st.success("Materials Issued Successfully!")
+                st.rerun()
+
+    with c_iss7:
+        if st.button("🧹 Clear Cart"):
+            st.session_state.cart = []
+            st.rerun()
+
+
+# ==========================================
+# TAB 2: PROJECT & YARD REPORTS
+# ==========================================
 with tab2:
-    st.header("Report Options")
+    st.markdown("### Filter Report Options (By Date Range or Full Report)")
+
+    f_col1, f_col2, f_col3, f_col4 = st.columns([1.5, 1.2, 1.2, 1.5])
+
+    with f_col1:
+        rep_hull = st.text_input(
+            "Project/Hull Name:", value="", key="rep_hull"
+        )
+    with f_col2:
+        from_date = st.date_input("From Date (YYYY-MM-DD)", datetime.today())
+    with f_col3:
+        to_date = st.date_input("To Date (YYYY-MM-DD)", datetime.today())
+
+    st.write("")
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1.5, 1.8, 1.5, 1.8])
+
     conn = get_connection()
-    df = pd.read_sql("SELECT * FROM inventory", conn)
+    rep_df = pd.read_sql("SELECT * FROM inventory", conn)
     conn.close()
 
-    if not df.empty:
-        # Separate IN and OUT transactions for Net Balance calculation
-        in_df = (
-            df[df["transaction_type"] == "IN"]
-            .groupby(["project_hull", "item_code", "material_spec", "unit"])[
+    active_report = None
+
+    with btn_col1:
+        if st.button("📋 Show Project Ledger (Filtered)"):
+            active_report = "ledger"
+    with btn_col2:
+        if st.button("📊 Show Total Yard Summary (Filtered)"):
+            active_report = "yard_summary"
+    with btn_col3:
+        if st.button("📁 Show Full Report (All Time)"):
+            active_report = "full"
+
+    # Filter Logic
+    if not rep_df.empty:
+        rep_df["date_dt"] = pd.to_datetime(rep_df["date"])
+        mask = (rep_df["date_dt"] >= pd.to_datetime(from_date)) & (
+            rep_df["date_dt"] <= pd.to_datetime(to_date)
+        )
+        filtered_df = rep_df.loc[mask]
+
+        if rep_hull:
+            filtered_df = filtered_df[
+                filtered_df["project_hull"]
+                .str.contains(rep_hull, case=False, na=False)
+            ]
+
+        # Calculate IN, OUT, and Net Balance
+        in_rep = (
+            filtered_df[filtered_df["transaction_type"] == "IN"]
+            .groupby(["date", "project_hull", "item_code", "material_spec"])[
                 "qty"
             ]
             .sum()
             .reset_index()
-            .rename(columns={"qty": "Total_IN"})
+            .rename(columns={"qty": "Total IN (Received)"})
         )
-
-        out_df = (
-            df[df["transaction_type"] == "OUT"]
-            .groupby(["project_hull", "item_code", "material_spec", "unit"])[
+        out_rep = (
+            filtered_df[filtered_df["transaction_type"] == "OUT"]
+            .groupby(["date", "project_hull", "item_code", "material_spec"])[
                 "qty"
             ]
             .sum()
             .reset_index()
-            .rename(columns={"qty": "Total_OUT"})
+            .rename(columns={"qty": "Total OUT (Issued)"})
         )
 
-        # Merge IN and OUT data
-        summary = pd.merge(
-            in_df,
-            out_df,
-            on=["project_hull", "item_code", "material_spec", "unit"],
+        summary_rep = pd.merge(
+            in_rep,
+            out_rep,
+            on=["date", "project_hull", "item_code", "material_spec"],
             how="outer",
         ).fillna(0)
-
-        # Calculate Net Balance (Total IN - Total OUT)
-        summary["Net_Balance"] = summary["Total_IN"] - summary["Total_OUT"]
-
-        st.subheader("YARD STOCK SUMMARY")
-        st.dataframe(summary, use_container_width=True)
-
-        # PRINT / DOWNLOAD REPORT OPTION
-        st.write("---")
-        st.subheader("🖨️ Print Slip / Download Options")
-
-        csv_data = summary.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📄 Download Report / Print Slip (CSV)",
-            data=csv_data,
-            file_name=f"Stock_Report_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
+        summary_rep["Net Balance"] = (
+            summary_rep["Total IN (Received)"]
+            - summary_rep["Total OUT (Issued)"]
         )
+
+        summary_rep = summary_rep.rename(
+            columns={
+                "date": "Date",
+                "project_hull": "Project/Hull Name",
+                "item_code": "Item Code",
+                "material_spec": "Material Description",
+            }
+        )
+
+        st.subheader("Report Table")
+        st.dataframe(summary_rep, use_container_width=True)
+
+        with btn_col4:
+            csv_report = summary_rep.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="🖨️ Print / Export A4 Report",
+                data=csv_report,
+                file_name=f"Yard_Report_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
     else:
-        st.info("No transaction data available yet.")
+        st.info("No records available to display.")
