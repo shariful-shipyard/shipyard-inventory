@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# Custom CSS to mimic desktop application layout
+# Custom CSS
 st.markdown(
     """
     <style>
@@ -84,6 +84,32 @@ def save_yard_name(name):
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
+# --- LIST DEFINITIONS ---
+CATEGORY_LIST = [
+    "Steel Plate",
+    "Profile/Angle/ bulb plate",
+    "Pipe & pipe fitting",
+    "Gas & oxygen",
+    "Paint & coating",
+    "Hardware",
+    "Electrical",
+    "Others",
+]
+
+UNIT_LIST = [
+    "Pcs",
+    "Kg",
+    "Ton",
+    "Set",
+    "Bottle",
+    "Feet",
+    "Meter",
+    "Pkt",
+    "Pot",
+    "Ltr",
+    "Drum",
+]
+
 # --- HEADER SECTION ---
 st.title("Shipbuilding Project & Store Management System")
 
@@ -109,21 +135,27 @@ tab1, tab2 = st.tabs(
 with tab1:
     st.markdown("### Add / Receive Material to Project / Store")
     with st.form("receive_form", clear_on_submit=True):
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.2, 1.2, 1, 1.5, 1.2, 0.8, 0.8, 1])
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+            [1.2, 1.2, 1, 1.5, 1.3, 0.9, 0.8, 1]
+        )
         with c1:
             rec_date = st.date_input("Date", datetime.today(), key="rec_date")
         with c2:
-            rec_hull = st.text_input("Project/Hull", value="Hull-101", key="rec_hull")
+            rec_hull = st.text_input(
+                "Project/Hull", value="Hull-101", key="rec_hull"
+            )
         with c3:
             rec_code = st.text_input("Code", key="rec_code")
         with c4:
             rec_spec = st.text_input("Material Spec", key="rec_spec")
         with c5:
-            rec_cat = st.selectbox("Category", ["Steel Plate", "Profile / Angle", "Pipe", "Electrode", "Other"], key="rec_cat")
+            rec_cat = st.selectbox("Category", CATEGORY_LIST, key="rec_cat")
         with c6:
-            rec_unit = st.selectbox("Unit", ["Pcs", "Kg", "Meter", "Pkt", "Ltr"], key="rec_unit")
+            rec_unit = st.selectbox("Unit", UNIT_LIST, key="rec_unit")
         with c7:
-            rec_qty = st.number_input("Qty", min_value=0.0, step=1.0, key="rec_qty")
+            rec_qty = st.number_input(
+                "Qty", min_value=0.0, step=1.0, key="rec_qty"
+            )
         with c8:
             rec_btn = st.form_submit_button("Receive")
 
@@ -133,8 +165,8 @@ with tab1:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'IN')
+                    INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, issued_to, remarks)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'IN', '', '')
                 """,
                     (
                         str(rec_date),
@@ -154,6 +186,48 @@ with tab1:
 
     st.divider()
 
+    # FETCH CURRENT STOCK FOR DISPLAY & SELECTION
+    conn = get_connection()
+    df_all = pd.read_sql("SELECT * FROM inventory", conn)
+    conn.close()
+
+    stock_df = pd.DataFrame()
+    item_options = []
+
+    if not df_all.empty:
+        in_df = (
+            df_all[df_all["transaction_type"] == "IN"]
+            .groupby(["item_code", "material_spec", "category", "unit"])[
+                "qty"
+            ]
+            .sum()
+            .reset_index()
+            .rename(columns={"qty": "IN"})
+        )
+        out_df = (
+            df_all[df_all["transaction_type"] == "OUT"]
+            .groupby(["item_code", "material_spec", "category", "unit"])[
+                "qty"
+            ]
+            .sum()
+            .reset_index()
+            .rename(columns={"qty": "OUT"})
+        )
+
+        stock_df = pd.merge(
+            in_df,
+            out_df,
+            on=["item_code", "material_spec", "category", "unit"],
+            how="outer",
+        ).fillna(0)
+        stock_df["Total Stock"] = stock_df["IN"] - stock_df["OUT"]
+        stock_df["ID"] = stock_df.index + 1
+
+        for idx, row in stock_df.iterrows():
+            item_options.append(
+                f"{row['item_code']} - {row['material_spec']} (Stock: {row['Total Stock']} {row['unit']})"
+            )
+
     # MIDDLE SECTION: STOCK LEVEL & ISSUE CART
     left_col, right_col = st.columns([1.2, 1])
 
@@ -162,39 +236,7 @@ with tab1:
         st.subheader("Overall Stock Level")
         search_query = st.text_input("Search Material:", "")
 
-        conn = get_connection()
-        df_all = pd.read_sql("SELECT * FROM inventory", conn)
-        conn.close()
-
-        if not df_all.empty:
-            in_df = (
-                df_all[df_all["transaction_type"] == "IN"]
-                .groupby(["item_code", "material_spec", "category", "unit"])[
-                    "qty"
-                ]
-                .sum()
-                .reset_index()
-                .rename(columns={"qty": "IN"})
-            )
-            out_df = (
-                df_all[df_all["transaction_type"] == "OUT"]
-                .groupby(["item_code", "material_spec", "category", "unit"])[
-                    "qty"
-                ]
-                .sum()
-                .reset_index()
-                .rename(columns={"qty": "OUT"})
-            )
-
-            stock_df = pd.merge(
-                in_df,
-                out_df,
-                on=["item_code", "material_spec", "category", "unit"],
-                how="outer",
-            ).fillna(0)
-            stock_df["Total Stock"] = stock_df["IN"] - stock_df["OUT"]
-            stock_df["ID"] = stock_df.index + 1
-
+        if not stock_df.empty:
             display_df = stock_df[
                 [
                     "ID",
@@ -222,7 +264,7 @@ with tab1:
                     )
                 ]
 
-            st.dataframe(display_df, use_container_width=True, height=280)
+            st.dataframe(display_df, use_container_width=True, height=250)
         else:
             st.info("No stock available in store.")
 
@@ -239,14 +281,27 @@ with tab1:
 
         cart_df = pd.DataFrame(
             st.session_state.cart,
-            columns=["Code", "Material Description", "Qty"],
+            columns=["Code", "Material Description", "Qty", "Unit"],
         )
         st.dataframe(cart_df, use_container_width=True, height=200)
 
     # --- BOTTOM SECTION: ISSUE MATERIAL TO SPECIFIC PROJECT ---
     st.markdown("### Material to Specific Project / Hull")
-    c_iss1, c_iss2, c_iss3, c_iss4, c_iss5, c_iss6, c_iss7 = st.columns(
-        [1.2, 1.2, 1.5, 0.8, 1, 1.2, 1]
+
+    c_iss_select, c_iss_qty = st.columns([3, 1])
+    with c_iss_select:
+        selected_item_str = st.selectbox(
+            "Select Material from Stock to Issue:",
+            options=item_options if item_options else ["No Material Available"],
+            key="selected_item_str",
+        )
+    with c_iss_qty:
+        iss_qty = st.number_input(
+            "Issue Qty", min_value=0.0, step=1.0, key="iss_qty"
+        )
+
+    c_iss1, c_iss2, c_iss3, c_iss5, c_iss6, c_iss7 = st.columns(
+        [1.2, 1.2, 1.5, 1, 1.3, 1]
     )
 
     with c_iss1:
@@ -257,31 +312,25 @@ with tab1:
         )
     with c_iss3:
         iss_to = st.text_input("Issued To / Contractor", key="iss_to")
-    with c_iss4:
-        iss_qty = st.number_input(
-            "Issue Qty", min_value=0.0, step=1.0, key="iss_qty"
-        )
+
     with c_iss5:
         if st.button("🛒 Add to Cart"):
-            if not df_all.empty and iss_qty > 0:
-                selected_item = display_df.iloc[
-                    0
-                ] if not display_df.empty else None
-                if selected_item is not None:
-                    st.session_state.cart.append(
-                        {
-                            "Code": selected_item["Code"],
-                            "Material Description": selected_item[
-                                "Material Description"
-                            ],
-                            "Qty": iss_qty,
-                            "Unit": selected_item["Unit"],
-                            "Category": selected_item["Category"],
-                        }
-                    )
-                    st.rerun()
+            if item_options and iss_qty > 0:
+                selected_idx = item_options.index(selected_item_str)
+                selected_row = stock_df.iloc[selected_idx]
+
+                st.session_state.cart.append(
+                    {
+                        "Code": selected_row["item_code"],
+                        "Material Description": selected_row["material_spec"],
+                        "Qty": iss_qty,
+                        "Unit": selected_row["unit"],
+                        "Category": selected_row["category"],
+                    }
+                )
+                st.rerun()
             else:
-                st.warning("Enter valid Qty.")
+                st.warning("Select valid material and enter Qty > 0.")
 
     with c_iss6:
         if st.button("✅ Confirm Issue & Print"):
@@ -291,8 +340,8 @@ with tab1:
                 for item in st.session_state.cart:
                     cursor.execute(
                         """
-                        INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, issued_to)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'OUT', ?)
+                        INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, issued_to, remarks)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'OUT', ?, '')
                     """,
                         (
                             str(iss_date),
@@ -310,6 +359,8 @@ with tab1:
                 st.session_state.cart = []
                 st.success("Materials Issued Successfully!")
                 st.rerun()
+            else:
+                st.warning("Cart is empty!")
 
     with c_iss7:
         if st.button("🧹 Clear Cart"):
@@ -323,7 +374,7 @@ with tab1:
 with tab2:
     st.markdown("### Filter Report Options (By Date Range or Full Report)")
 
-    f_col1, f_col2, f_col3, f_col4 = st.columns([1.5, 1.2, 1.2, 1.5])
+    f_col1, f_col2, f_col3 = st.columns([1.5, 1.2, 1.2])
 
     with f_col1:
         rep_hull = st.text_input(
@@ -341,19 +392,6 @@ with tab2:
     rep_df = pd.read_sql("SELECT * FROM inventory", conn)
     conn.close()
 
-    active_report = None
-
-    with btn_col1:
-        if st.button("📋 Show Project Ledger (Filtered)"):
-            active_report = "ledger"
-    with btn_col2:
-        if st.button("📊 Show Total Yard Summary (Filtered)"):
-            active_report = "yard_summary"
-    with btn_col3:
-        if st.button("📁 Show Full Report (All Time)"):
-            active_report = "full"
-
-    # Filter Logic
     if not rep_df.empty:
         rep_df["date_dt"] = pd.to_datetime(rep_df["date"])
         mask = (rep_df["date_dt"] >= pd.to_datetime(from_date)) & (
@@ -367,7 +405,6 @@ with tab2:
                 .str.contains(rep_hull, case=False, na=False)
             ]
 
-        # Calculate IN, OUT, and Net Balance
         in_rep = (
             filtered_df[filtered_df["transaction_type"] == "IN"]
             .groupby(["date", "project_hull", "item_code", "material_spec"])[
