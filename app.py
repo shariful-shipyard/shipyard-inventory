@@ -1,6 +1,6 @@
 from datetime import datetime
+import sqlite3
 import pandas as pd
-from sqlalchemy import create_engine, text
 import streamlit as st
 
 # --- STREAMLIT PAGE SETUP ---
@@ -11,20 +11,18 @@ st.set_page_config(
 )
 
 
-# --- DATABASE CONNECTION (SUPABASE POSTGRES) ---
+# --- DATABASE SETUP (SQLITE) ---
 def get_connection():
-    db_url = st.secrets["postgres"]["url"]
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    engine = create_engine(db_url)
-    return engine.connect()
+    conn = sqlite3.connect("shipbuilding_store.db", check_same_thread=False)
+    return conn
 
 
 def init_db():
     conn = get_connection()
-    query = text("""
+    cursor = conn.cursor()
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS inventory (
-        id SERIAL PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT,
         project_hull TEXT,
         item_code TEXT,
@@ -34,9 +32,8 @@ def init_db():
         unit TEXT,
         transaction_type TEXT,
         remarks TEXT
-    );
+    )
     """)
-    conn.execute(query)
     conn.commit()
     conn.close()
 
@@ -58,9 +55,8 @@ with tab1:
         col1, col2, col3 = st.columns(3)
         with col1:
             date_val = st.date_input("Date", datetime.today())
-            project_hull = st.selectbox(
-                "Project / Hull",
-                ["ALL YARD", "Hull-101", "Hull-102", "PONTOON-01"],
+            project_hull = st.text_input(
+                "Project / Hull (e.g., Hull-101, ALL YARD)"
             )
             item_code = st.text_input("Item Code")
 
@@ -82,23 +78,23 @@ with tab1:
         if btn_in or btn_out:
             trans_type = "IN" if btn_in else "OUT"
             conn = get_connection()
-            query = text("""
+            cursor = conn.cursor()
+            cursor.execute(
+                """
             INSERT INTO inventory (date, project_hull, item_code, category, material_spec, qty, unit, transaction_type, remarks)
-            VALUES (:date, :project_hull, :item_code, :category, :material_spec, :qty, :unit, :transaction_type, :remarks)
-            """)
-            conn.execute(
-                query,
-                {
-                    "date": str(date_val),
-                    "project_hull": project_hull,
-                    "item_code": item_code,
-                    "category": category,
-                    "material_spec": material_spec,
-                    "qty": qty,
-                    "unit": unit,
-                    "transaction_type": trans_type,
-                    "remarks": remarks,
-                },
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    str(date_val),
+                    project_hull,
+                    item_code,
+                    category,
+                    material_spec,
+                    qty,
+                    unit,
+                    trans_type,
+                    remarks,
+                ),
             )
             conn.commit()
             conn.close()
@@ -112,36 +108,42 @@ with tab2:
     conn.close()
 
     if not df.empty:
-        # Grouping and Net Balance Calculation
+        # Separate IN and OUT transactions for Net Balance calculation
         in_df = (
             df[df["transaction_type"] == "IN"]
-            .groupby(["project_hull", "item_code", "material_spec"])["qty"]
+            .groupby(["project_hull", "item_code", "material_spec", "unit"])[
+                "qty"
+            ]
             .sum()
             .reset_index()
             .rename(columns={"qty": "Total_IN"})
         )
+
         out_df = (
             df[df["transaction_type"] == "OUT"]
-            .groupby(["project_hull", "item_code", "material_spec"])["qty"]
+            .groupby(["project_hull", "item_code", "material_spec", "unit"])[
+                "qty"
+            ]
             .sum()
             .reset_index()
             .rename(columns={"qty": "Total_OUT"})
         )
 
+        # Merge IN and OUT data
         summary = pd.merge(
             in_df,
             out_df,
-            on=["project_hull", "item_code", "material_spec"],
+            on=["project_hull", "item_code", "material_spec", "unit"],
             how="outer",
         ).fillna(0)
 
-        # CORRECT NET BALANCE CALCULATION (Total IN - Total OUT)
+        # Calculate Net Balance (Total IN - Total OUT)
         summary["Net_Balance"] = summary["Total_IN"] - summary["Total_OUT"]
 
         st.subheader("YARD STOCK SUMMARY")
         st.dataframe(summary, use_container_width=True)
 
-        # PRINT / DOWNLOAD SLIP FEATURE
+        # PRINT / DOWNLOAD REPORT OPTION
         st.write("---")
         st.subheader("🖨️ Print Slip / Download Options")
 
